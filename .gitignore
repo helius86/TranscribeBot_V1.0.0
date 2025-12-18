@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.log
+
+# Virtual env
+.venv/
+env/
+venv/
+
+# SQLite database
+app.db
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Environment
+.env
+.DS_Store
+
+# Build/IDE
+.idea/
+.vscode/
+*.iml
