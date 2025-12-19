@@ -85,9 +85,21 @@ function ProjectDetail() {
   };
 
   const handleChapterFieldChange = (chapterId: number, field: keyof Chapter, value: string | number) => {
-    setChapters((prev) =>
-      prev.map((c) => (c.id === chapterId ? { ...c, [field]: value } : c)),
-    );
+    setChapters((prev) => {
+      const idx = prev.findIndex((c) => c.id === chapterId);
+      if (idx === -1) return prev;
+
+      const next = [...prev];
+      next[idx] = { ...next[idx], [field]: value };
+
+      const isStartChange = field === 'start_sec' && typeof value === 'number';
+      const isEndChange = field === 'end_sec' && typeof value === 'number';
+
+      return syncAdjacentBoundaries(next, idx, {
+        startBoundary: isStartChange ? (value as number) : undefined,
+        endBoundary: isEndChange ? (value as number) : undefined,
+      });
+    });
   };
 
   const refreshChapters = async () => {
@@ -106,7 +118,18 @@ function ProjectDetail() {
         end_sec: chapter.end_sec,
         order: chapter.order,
       });
-      setChapters((prev) => prev.map((c) => (c.id === chapter.id ? updated : c)));
+
+      let linkedUpdates: { updatedPrev: Chapter | null; updatedNext: Chapter | null } = {
+        updatedPrev: null,
+        updatedNext: null,
+      };
+      try {
+        linkedUpdates = await persistAdjacentBoundaries(updated);
+      } catch (adjErr) {
+        setError(adjErr instanceof Error ? adjErr.message : 'Failed to update adjacent chapters');
+      }
+
+      applyChapterUpdateWithLinks(updated, linkedUpdates);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update chapter');
     } finally {
@@ -119,7 +142,18 @@ function ProjectDetail() {
     setRegenerating(true);
     try {
       const updated = await regenerateChapter(selectedChapter.id, line.start_sec);
-      setChapters((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+
+      let linkedUpdates: { updatedPrev: Chapter | null; updatedNext: Chapter | null } = {
+        updatedPrev: null,
+        updatedNext: null,
+      };
+      try {
+        linkedUpdates = await persistAdjacentBoundaries(updated);
+      } catch (adjErr) {
+        setError(adjErr instanceof Error ? adjErr.message : 'Failed to update adjacent chapters');
+      }
+
+      applyChapterUpdateWithLinks(updated, linkedUpdates);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to regenerate chapter');
     } finally {
@@ -162,6 +196,67 @@ function ProjectDetail() {
   const setChapterEndFromLine = (line: TranscriptLine) => {
     if (!selectedChapter) return;
     handleChapterFieldChange(selectedChapter.id, 'end_sec', line.end_sec ?? line.start_sec);
+  };
+
+  const syncAdjacentBoundaries = (
+    list: Chapter[],
+    idx: number,
+    updates: { startBoundary?: number; endBoundary?: number },
+  ) => {
+    if (updates.startBoundary === undefined && updates.endBoundary === undefined) return list;
+
+    const next = [...list];
+    if (updates.startBoundary !== undefined && idx > 0) {
+      next[idx - 1] = { ...next[idx - 1], end_sec: updates.startBoundary };
+    }
+    if (updates.endBoundary !== undefined && idx + 1 < next.length) {
+      next[idx + 1] = { ...next[idx + 1], start_sec: updates.endBoundary };
+    }
+    return next;
+  };
+
+  const applyChapterUpdateWithLinks = (
+    updatedChapter: Chapter,
+    linked?: { updatedPrev?: Chapter | null; updatedNext?: Chapter | null },
+  ) => {
+    setChapters((prev) => {
+      const idx = prev.findIndex((c) => c.id === updatedChapter.id);
+      if (idx === -1) return prev;
+
+      const startChanged = prev[idx].start_sec !== updatedChapter.start_sec;
+      const endChanged = (prev[idx].end_sec ?? null) !== (updatedChapter.end_sec ?? null);
+      const base = prev.map((c) => {
+        if (c.id === updatedChapter.id) return updatedChapter;
+        if (linked?.updatedPrev && c.id === linked.updatedPrev.id) return linked.updatedPrev;
+        if (linked?.updatedNext && c.id === linked.updatedNext.id) return linked.updatedNext;
+        return c;
+      });
+
+      return syncAdjacentBoundaries(base, idx, {
+        startBoundary: startChanged ? updatedChapter.start_sec : undefined,
+        endBoundary: endChanged && updatedChapter.end_sec != null ? updatedChapter.end_sec : undefined,
+      });
+    });
+  };
+
+  const persistAdjacentBoundaries = async (
+    chapter: Chapter,
+  ): Promise<{ updatedPrev: Chapter | null; updatedNext: Chapter | null }> => {
+    const idx = chapters.findIndex((c) => c.id === chapter.id);
+    const prevChapter = idx > 0 ? chapters[idx - 1] : null;
+    const nextChapter = idx >= 0 && idx + 1 < chapters.length ? chapters[idx + 1] : null;
+
+    let updatedPrev: Chapter | null = null;
+    let updatedNext: Chapter | null = null;
+
+    if (prevChapter) {
+      updatedPrev = await updateChapter(prevChapter.id, { end_sec: chapter.start_sec });
+    }
+    if (nextChapter && chapter.end_sec != null) {
+      updatedNext = await updateChapter(nextChapter.id, { start_sec: chapter.end_sec });
+    }
+
+    return { updatedPrev, updatedNext };
   };
 
   const getChapterEffectiveEnd = (chapter: Chapter, all: Chapter[], lines: TranscriptLine[]) => {
